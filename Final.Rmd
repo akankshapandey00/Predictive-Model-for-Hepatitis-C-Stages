@@ -1,0 +1,924 @@
+---
+title: "A Predictive Model to Predict the development of Hepatitis C stages: Development and Performance Evaluation"
+author: "Akanksha Pandey"
+date: "Fall 2023"
+output:
+  pdf_document:
+    toc: true
+    toc_depth: 4
+subtitle: " "
+---
+
+# Intorduction
+
+The objective of this study is to forecast the progression stages of Hepatitis C. The primary classification criterion is Category (2), which differentiates between blood donors and Hepatitis C patients, including stages of the disease (Hepatitis C, Fibrosis, Cirrhosis). In this analysis, the stages of Cirrhosis, Fibrosis, and Hepatitis C have been amalgamated into a single category named 'Hepatitis', while the contrasting group is labeled as 'Donor'.
+
+**Algorithms used:** Random Forest models, Penalized logistic regression, and Boosted Trees model
+
+**Feature Engineering and Transformation:** Impute using median, turn nominal variables into dummies, Normalize all predictors, Balance target classes using SMOTE algorithm.
+
+# Libraries
+
+```{r, message=FALSE, warning=FALSE}
+# Load necessary libraries
+library(utils)
+library(psych)
+library(caret)
+library(tidyverse)
+library(skimr)
+library(stringr)
+library(themis) 
+library(vip) 
+library(probably) 
+library("ggplot2")            
+library("GGally")  
+library(corrplot)
+library(randomForest)
+library(pROC)
+library(tidymodels)
+library(ranger)
+library(xgboost)
+
+```
+
+# 1. Data Acquisition
+
+The dataset that I am using for my analysis includes laboratory test results of blood donors and Hepatitis C patients, along with demographic details like age. This dataset was sourced from the UCI Machine Learning Repository, specifically from their 'HCV data' section.
+
+It consists of 615 observations and 14 variables, and is primarily aimed at health analysis. It uniquely distinguishes between blood donors and Hepatitis C patients, a critical aspect for medical research and analysis. The dataset includes basic demographic information such as age and sex. In addition, it features a comprehensive set of health parameters: ALB, ALP, ALT, AST, BIL , CHE, CHOL, CREA , GGT, and PROT .
+
+```{r echo=FALSE, warning=FALSE, paged.print=TRUE}
+# URL of the zip file
+url <- "https://archive.ics.uci.edu/static/public/571/hcv+data.zip"
+
+# Download the zip file
+download.file(url, destfile = "hcv_data.zip")
+
+# Unzip the file
+unzip("hcv_data.zip")
+
+# Load data
+data <- read.csv("hcvdat0.csv")
+
+head(data)
+str(data)
+#summary(data)
+dim(data)
+```
+
+### Encoding catogeriocal variable
+
+My target variable (diagnosis) is catogeriocal (values: '0=Blood Donor', '0s=suspect Blood Donor', '1=Hepatitis', '2=Fibrosis', '3=Cirrhosis') for this analysis the stages of Cirrhosis, Fibrosis, and Hepatitis C have been amalgamated into a single category named 'Hepatitis', while the contrasting group is labeled as 'Donor'. I will also remove column X to avoid overfitting.
+
+```{r echo=FALSE}
+data <- data %>% 
+  mutate(Diagnosis = if_else(str_detect(Category, "Donor"), "Donor", "Hepatitis")) %>%
+  mutate(Diagnosis = factor(Diagnosis, levels = c("Hepatitis", "Donor"))) %>%
+  relocate(Diagnosis, .before = Category) %>%
+  select(-Category)
+data <- subset(data, select = -c(X) )
+head(data)
+```
+
+# 2. Data Exploration
+
+### Bar plot Diagnosis Vs Count
+
+This bar graph shows relation between diagnosis and the number of people for each case. The x-axis represents Diagnosis and the y-axis represents count. Form the graph we can see that the count for Donor is way more than Hepatitis.
+
+```{r echo=FALSE, warning=FALSE}
+# Bar plot 
+ggplot(data=data,                             
+       aes(x=Diagnosis, 
+           fill=Diagnosis)) +                       
+  geom_bar() +                                 
+  scale_x_discrete(name = 'Diagnosis',       
+                   labels=labs) + 
+  scale_fill_discrete(name = 'Diagnosis') + 
+  labs(x='Diagnosis',                       
+       y='Count') + 
+  theme_bw() 
+```
+
+### Relationship between Diagnosis and other Variables.
+
+```{r echo=FALSE, message=TRUE, warning=FALSE}
+data %>%
+  gather(-Diagnosis, key = "var", value = "value") %>%
+  ggplot(aes(x = value, y = Diagnosis, color = Diagnosis)) +
+    geom_jitter(alpha = 0.5, size = 0.6) +
+    stat_smooth() +
+    facet_wrap(~ var, scales = "free") +
+    theme_bw()
+```
+
+**Graph for 'Age'**
+
+The age distribution appears to be similar in both 'Donor' and 'Hepatitis' groups, with a wide range of ages represented. There might be a slight concentration of older individuals in the 'Hepatitis' group.
+
+**Graph for 'ALB'**
+
+Albumin levels show a spread across a range of values. There may be some differences in the distribution of values between the two groups, but it's not distinctly separated.
+
+**Graph for 'ALP'**
+
+The ALP levels are spread out for both categories, with some potential outliers, especially in the 'Hepatitis' group.
+
+**Graph for 'ALT'**
+
+ALT levels vary widely in both groups. It's noticeable that the 'Hepatitis' category may have higher levels, as indicated by the spread of points.
+
+**Graph for 'AST'**
+
+AST levels show a wide range in both categories, with some high values particularly in the 'Hepatitis' group.
+
+**Graph for 'BIL'**
+
+BIL levels show a significant spread in the 'Hepatitis' group compared to 'Donor', with several higher values indicating potential liver function issues.
+
+**Graph for 'CHE'**
+
+The spread of CHE levels is quite wide in both groups. There doesn't appear to be a clear distinction between the two categories.
+
+**Graph for 'CHOL'**
+
+CHOL levels are varied in both groups. It's hard to discern any clear pattern differentiating the groups based on this plot.
+
+**Graph for 'CREA'**
+
+Creatinine levels appear to be relatively similar across both groups, with no significant differences observable from the plot.
+
+**Graph for 'GGT'**
+
+GGT levels vary, with some higher values in the 'Hepatitis' group. This could indicate liver disease, as GGT is often elevated in liver disorders.
+
+**Graph for 'PROT'**
+
+Protein levels are fairly evenly distributed across both groups, with no striking differences visible.
+
+### Detection of outliers for continuous features
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Using BoxPlot to detect the presence of outliers 
+boxplot(data[,c('Age','ALB','ALP','ALT','AST','BIL','CHE','CHOL','CREA','GGT', 'PROT')])
+
+outlier_counts <- sapply(data[, c('Age','ALB','ALP','ALT','AST','BIL','CHE','CHOL','CREA','GGT', 'PROT')], function(x) {
+  length(boxplot.stats(x)$out)
+})
+
+outlier_counts
+```
+
+| Features | Outliers |
+|----------|----------|
+| Age      | 1        |
+| ALB      | 27       |
+| ALP      | 10       |
+| ALT      | 36       |
+| AST      | 64       |
+| BIL      | 47       |
+| CHE      | 24       |
+| CHOL     | 12       |
+| CREA     | 12       |
+| GGT      | 65       |
+| PROT     | 20       |
+
+### Correlation analysis
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Selecting only the numeric columns for correlation analysis
+numeric_data <- data[, sapply(data, is.numeric)]
+
+# Calculating the correlation matrix
+correlation_matrix <- cor(numeric_data, use = "complete.obs") 
+
+# Displaying the correlation matrix
+print(correlation_matrix)
+
+# Plotting the correlation matrix
+corrplot(correlation_matrix, method = "color")
+```
+
+Correlations can provide insights into how different biochemical markers are related to each other, which can be useful in medical diagnosis and understanding the physiological state of an individual.
+
+[**Based on the correlation matrix, correlations between various pairs of variables:**]{.underline}
+
+**Age:**
+
+Negatively correlated with ALB (-0.19) and CHE (-0.08), suggesting that these variables tend to decrease slightly as age increases.
+
+Positively correlated with ALP (0.18) and GGT (0.14), indicating these variables tend to increase slightly with age. The correlations with other variables are weak, close to 0.
+
+**ALB:**
+
+Strongly positively correlated with PROT (0.57), suggesting that higher ALB levels are associated with higher PROT levels.
+
+Negatively correlated with AST (-0.18), BIL (-0.17), and GGT (-0.15), indicating that higher ALB levels are associated with lower levels of these variables. Other correlations are weak.
+
+**ALP:**
+
+Strongly positively correlated with GGT (0.46), suggesting a relationship between ALP and liver enzyme levels. Other correlations are relatively weak.
+
+**ALT:**
+
+Positively correlated with AST (0.20) and GGT (0.22), showing a relationship with these liver enzymes. Other correlations are weak.
+
+**AST:**
+
+Strongly positively correlated with GGT (0.48), indicating a close relationship between these liver enzymes. Negatively correlated with CHE (-0.20) and CHOL (-0.20). Other correlations are weak.
+
+**BIL:**
+
+Positively correlated with AST (0.31) and GGT (0.21), showing a relationship with liver function. Negatively correlated with ALB (-0.17) and CHE (-0.32). Other correlations are weak.
+
+**CHE:**
+
+Positively correlated with ALB (0.36), CHOL (0.43), and PROT (0.31), suggesting a relationship with these variables. Negatively correlated with AST (-0.20), BIL (-0.32), and GGT (-0.10). Other correlations are weak.
+
+**CHOL:**
+
+Positively correlated with CHE (0.43) and PROT (0.25). Other correlations are weak.
+
+**CREA:**
+
+Weak correlations with most variables, indicating no strong relationship with liver function tests or protein levels. Slightly positive correlation with ALP (0.15) and GGT (0.13).
+
+**GGT:**
+
+Strong correlations with ALP (0.46) and AST (0.48), indicating a close relationship with these liver enzymes. Other correlations are relatively weak.
+
+**PROT:**
+
+Strongly positively correlated with ALB (0.57), showing a close relationship. Other correlations are weak.
+
+In summary, the strongest correlations are observed between ALP, ALT, AST, GGT and between ALB and PROT levels. Many correlations are weak, suggesting no strong linear relationship between these variables.
+
+### Evaluation of distribution
+
+```{r echo=FALSE, message=TRUE, warning=FALSE}
+# Selecting data columns
+selected_columns <- c('Age','ALB','ALP','ALT','AST','BIL','CHE','CHOL','CREA','GGT', 'PROT')
+
+# Creating subset of the data
+data_subset <- select(data, all_of(selected_columns))
+
+# Generating statistical summary
+statistical_summary <- summary(data_subset)
+print(statistical_summary)
+
+# Function to create histogram and density plot
+create_plots <- function(data, col) {
+  p <- ggplot(data, aes_string(x = col)) +
+    geom_histogram(aes(y = ..density..), binwidth = 1, fill = "salmon", alpha = 0.7) +
+    geom_density(colour = "red", size = 1) +
+    ggtitle(paste("Histogram and Density of", col)) +
+    theme_minimal()
+  print(p)
+}
+
+# Reshape the data for box plot 
+long_data <- pivot_longer(data_subset, cols = everything(), names_to = "Variable", values_to = "Value")
+
+# Apply the function to each selected column
+lapply(names(data_subset), function(col) create_plots(data_subset, col))
+
+# Box Plots for each selected variable
+melted_data <- reshape2::melt(data_subset)
+p <- ggplot(melted_data, aes(x = variable, y = value)) +
+  geom_boxplot(fill = "lightblue", colour = "darkblue") +
+  ggtitle("Box Plots of Selected Variables") +
+  theme_minimal() +
+  xlab("Variables") + ylab("Values")
+print(p)
+```
+
+**Age:** Ranges from 19 to 77 years, with the average (mean) age being around 47 years. The distribution is roughly centered (median is 47), suggesting a fairly symmetrical age distribution.
+
+**ALB:** Values range from 14.9 to 82.2, with a mean of approximately 41.6. The median is slightly lower than the mean, which might indicate a slight left skew in the distribution.
+
+**ALP:** Has a wide range (11.3 to 416.6), and the mean (68.28) is higher than the median (66.2), indicating a right-skewed distribution.
+
+**ALT:** The values vary significantly, ranging from 0.9 to 325.3, and the mean is higher than the median, also indicating a right-skewed distribution.
+
+**AST:** This variable also shows a broad range and a higher mean compared to the median, suggesting right skewness.
+
+**BIL:** The range is from 0.8 to 254, with a mean significantly higher than the median, indicating a distribution that is heavily right-skewed.
+
+**CHE:** Ranges from 1.42 to 16.41, with a median very close to the mean, suggesting a more symmetrical distribution.
+
+**CHOL:** Shows a range from 1.43 to 9.67 with the mean and median being quite close, indicating a more symmetric distribution.
+
+**CREA:** Has a very wide range (8 to 1079.1) and the mean is higher than the median, pointing to a right-skewed distribution.
+
+**GGT:** Exhibits a broad range (4.5 to 650.9) and a mean that is much higher than the median, indicating significant right skewness.
+
+**PROT:** The range is from 44.8 to 90, with a mean close to the median, suggesting a relatively symmetric distribution.
+
+It is evident that several variables have right-skewed distributions, as indicated by means that are larger than medians.
+
+The presence of missing values ('NA's) in some variables should be addressed before performing further analysis.
+
+# 3. Data Cleaning & Shaping
+
+### Identification of missing values
+
+Identifying missing values in data is crucial for ensuring data quality and reliability, particularly in data analysis, statistics, and machine learning. It helps in making informed decisions, as missing data can lead to incorrect conclusions. In statistical and machine learning contexts, many methods require complete data; hence, missing values can distort results and affect model accuracy.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Identification of missing values
+na_values <- sapply(data, function(x) sum(is.na(x)))
+
+# Printing the number of missing values per column
+print(na_values)
+```
+
+**Diagnosis, Age, Sex, AST, BIL, CHE, CREA, GGT:** These variables have no missing values, indicating complete data for these parameters. This is crucial, especially for fundamental demographic information like Age and Sex, and key biochemical markers like AST, BIL, CHE, CREA, and GGT.
+
+**ALB, ALT, PROT:** Each of these variables has 1 missing value.
+
+**ALP:** There are 18 missing values. This is relatively higher compared to other variables and could be significant depending on the size of the dataset.
+
+**CHOL:** It has 10 missing values.
+
+### Data imputation of missing data
+
+Data imputation is essential in data analysis and machine learning for ensuring completeness and integrity of datasets. It addresses missing values, a common issue in real-world data, by filling gaps to prevent biased or invalid results. This process is crucial for maintaining accuracy in statistical models and analyses, particularly when complete data is required. Imputation improves model performance by providing a fully usable dataset for training and validation, thereby maximizing data utilization and avoiding significant information loss. It's a practical solution for handling everyday data inconsistencies, ensuring valuable data collected with effort and resources is fully leveraged in analysis.
+
+As my data does not have too many missing values I will impute them with the median.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Function to impute NA values
+impute_med <- function(x) {
+  x[is.na(x)] <- median(x, na.rm = TRUE)
+  return(x)
+}
+
+# Applying function to each column
+imputed_data <- data %>% mutate_if(is.numeric, impute_med)
+
+# Cross checking data
+summary(imputed_data)
+```
+
+We can see that the dataset no longer has NA/missing values is any of the columns.
+
+### Normalization feature values
+
+I will use Min-Max Normalization technique. This technique rescales the feature values to a fixed range, typically between 0 and 1.
+
+Each element x in the vector (or column in a data frame) has the minimum value of that vector subtracted from it. This shifts the entire distribution so that the lowest value becomes 0. The result is then divided by the range of the vector (i.e., the maximum value minus the minimum value). This scaling step transforms the data so that the highest value in the original dataset corresponds to 1.
+
+The effect of this normalization is that all values are rescaled into the range [0, 1] while maintaining the relative differences in the original dataset.
+
+```{r}
+# Normalization 
+normalize <- function(x) {
+  return((x - min(x, na.rm = TRUE)) / (max(x, na.rm = TRUE) - min(x, na.rm = TRUE)))
+}
+
+data_norm <- as.data.frame(lapply(imputed_data, function(x) if(is.numeric(x)) normalize(x) else x))
+```
+
+# 4. Model Construction
+
+### Creation of training & validation subsets
+
+Creating training and validation subsets is crucial in machine learning for model training and evaluation. The dataset is typically divided into two parts: a larger training set for model learning and a smaller validation set for model assessment and tuning. Random sampling is used for splitting to ensure representativeness, and stratification may be employed to maintain proportional representation of categories in both sets. Setting a random seed ensures reproducibility.
+
+I will use 70/30 split ratios for training/validation.
+
+```{r echo=FALSE}
+# Split the data into training and testing subsets 70:30 
+set.seed(123) 
+trainIndex <- createDataPartition(data_norm$Diagnosis, p = 0.7, list = FALSE)
+df_train <- data_norm[trainIndex, ]
+df_val <- data_norm[-trainIndex, ]
+```
+
+### Dummy Encoding for Nominal Predictors
+
+```{r echo=FALSE}
+m <- recipe(Diagnosis ~ ., data = df_train)
+
+# Dummy Encoding for Nominal Predictors
+dummy <- step_dummy(m, all_nominal_predictors())
+
+# Normalization of Predictors
+nor <- step_normalize(dummy, all_predictors())
+
+# SMOTE for Balancing the Classes
+s <- step_smote(nor, Diagnosis, over_ratio = 1, seed = 100)
+```
+
+### Creation of model A with proper data encoding: Logistic Regression
+
+I begins by specifying the model using logistic_reg(), and importantly, it includes a tunable regularization parameter (penalty = tune()). This indicates that the optimal value for this penalty, which is crucial for preventing overfitting, will be determined later through a model tuning process. The model is configured to use L2 regularization exclusively (mixture = 1), aligning with Ridge regression techniques. For the computational aspect, the glmnet chosen as the engine (set_engine("glmnet")).
+
+```{r, warning=FALSE}
+# Specification 
+lr_model <- logistic_reg(penalty = tune(), mixture = 1) %>% 
+  set_engine("glmnet")
+```
+
+I then set up a comprehensive workflow that includes the logistic regression model with its tuning parameters and preprocessing steps. Additionally, I prepares a grid of penalty values to be used in the tuning process, which is a crucial step for optimizing the model's performance by finding the best regularization strength.
+
+```{r, message=FALSE, warning=FALSE}
+# Joining Model and Processing Recipe
+lr <- workflow() %>% 
+  add_model(lr_model) %>% 
+  add_recipe(s)
+
+lr_grid <- tibble(penalty = 10**seq(-4, 0, length.out = 30))
+```
+
+Next, I set up a stratified, repeated 10-fold cross-validation process using the R function `vfold_cv`. In this process, the training dataset `df_train` is divided into 10 distinct folds, ensuring that each fold has a similar distribution of the "Diagnosis" variable through stratification. This approach helps in maintaining the representation of different diagnoses across all folds. The cross-validation is set to repeat 5 times, providing multiple rounds of validation. This method is essential for evaluating the model's performance and generalizability, ensuring that the assessment is robust, minimizes bias, and accurately reflects how the model might perform on unseen data.
+
+```{r}
+# Stratified, Repeated 10-fold Cross-Validation
+cv_lr <- vfold_cv(df_train, strata = "Diagnosis", v = 10, repeats = 5)
+```
+
+I plan to utilize the metric_set function to establish a robust evaluation framework for my classification model. This framework will incorporate two key metrics: roc_auc and j_index. By including roc_auc, I'll be able to determine how well the model distinguishes between different classes, with an emphasis on achieving a high AUC-ROC score for optimal performance. Concurrently, the inclusion of j_index will allow me to assess the model's diagnostic accuracy, emphasizing the balance between sensitivity and specificity which is crucial in scenarios where false positives and negatives carry significant consequences.
+
+```{r}
+# Metrics 
+cls <- metric_set(roc_auc, j_index)
+
+```
+
+In the next step of my analysis, I proceed to tune my logistic regression model using the tune_grid function from the tidymodels suite in R. This involves setting up a grid of potential hyperparameters, which I've defined in lr_grid. The tune_grid function will iterate through these hyperparameters to find the most effective combination for my model. To evaluate the performance of each model configuration, I'm using cross-validation, indicated by the resamples = cv argument. This approach helps ensure that the model performs well across different segments of the data, reinforcing its generalizability and robustness. Additionally, by setting control = control_grid(save_pred = TRUE), I make sure to save all predictions from each iteration. This is crucial for a thorough analysis of the model's performance under various conditions. Finally, I assess the model's effectiveness using a set of classification metrics, which I refer to as cls in my script. Adopting this structured approach to tune the logistic regression model is essential for optimizing its performance and ensuring its accuracy in my predictive tasks.
+
+```{r, warning=FALSE}
+# Model Tuning
+lr_res <- tune_grid(lr,
+              grid = lr_grid,
+              resamples = cv_lr,
+              control = control_grid(save_pred = TRUE),
+              metrics = cls)
+```
+
+In this phase of my analysis, I focus on identifying the best models from the tuning process based on their performance in terms of Area Under the ROC Curve (AUC). To achieve this, I use the show_best function, which is designed to rank the models according to their performance metrics. Specifically, I apply this function to the results of my logistic regression model tuning, stored in lr_res, and I specify the metric as roc_auc, which represents the AUC. The command best_mean_AUC \<- show_best(lr_res, metric = "roc_auc") captures the top models with the highest AUC values. By storing these results in best_mean_AUC, I can easily review and analyze which models performed best during the tuning process based on their ability to distinguish between the classes effectively, as indicated by their AUC scores. This step is crucial as it helps me in selecting the most promising model for further analysis or deployment in practical applications.
+
+```{r echo=FALSE}
+# Best models ranked by AUC
+best_mean_AUC <- show_best(lr_res, metric = "roc_auc")
+best_mean_AUC
+```
+
+In the next stage of my analysis, I turn my attention to identifying the top-performing models based on the J-index, a metric that combines sensitivity and specificity to evaluate the performance of binary classifiers. To do this, I employ the show_best function again, but this time with a focus on the 'j_index' metric. By executing the command best_j_index \<- show_best(lr_res, metric = "j_index"), I am able to sort and retrieve the models from my logistic regression results, lr_res, that have the highest J-index scores. Storing these results in best_j_index allows me to easily review which models have the most balanced trade-off between true positive rate and true negative rate. This is a crucial step in my analysis as it helps me to pinpoint models that not only perform well overall but also maintain a healthy balance in correctly identifying positive and negative cases, which is vital in many practical scenarios, especially in medical or binary classification contexts.
+
+```{r echo=FALSE}
+# Best models ranked by J-index
+best_j_index <- show_best( lr_res, metric = "j_index")
+best_j_index
+```
+
+In this step of my analysis, I am focusing on selecting the best hyperparameters for my logistic regression model. The reason I'm doing this is to optimize my model's performance. To achieve this, I'm using the select_best function, which helps in choosing the hyperparameters that lead to the highest performance based on a specific metric. I've chosen 'roc_auc' as my metric, standing for the Area Under the ROC Curve, because it's a crucial measure of a model's ability to accurately distinguish between different classes. By executing lr_best \<- select_best(lr_res, metric = "roc_auc"), I am sifting through the tuning results of my model to identify and store the set of hyperparameters that deliver the best AUC score. This step is essential for me because it ensures that my logistic regression model is fine-tuned to be as effective and accurate as possible in its predictive tasks.
+
+```{r echo=FALSE}
+# Best hyper-parameters
+lr_best <- select_best(lr_res, metric = "roc_auc")
+lr_best
+```
+
+I first identified the best logistic regression model based on the ROC-AUC metric using select_best. Then, I focused on evaluating the ROC-AUC of this selected model. I extracted the model's predictions and computed its ROC curve using a series of functions in R. This involved collecting predictions from the best model, calculating the ROC curve based on actual and predicted values, and labeling the results as 'Logistic Regression' for clarity. Finally, I visualized this ROC curve using the autoplot function, which provided an intuitive graphical representation of the model's performance in differentiating between positive and negative classes. This step was crucial for understanding the model's effectiveness in terms of sensitivity and specificity.
+
+```{r echo=FALSE}
+# ROC-AUC of the best model
+lr_auc <- lr_res %>% 
+  collect_predictions(parameters = lr_best) %>% 
+  roc_curve(Diagnosis, .pred_Hepatitis) %>% 
+  mutate(model = "Logistic Regression")
+
+autoplot(lr_auc)
+```
+
+In this phase of the analysis, I am finalizing and fitting a logistic regression model for predictive tasks. The primary goal is to create an optimized model capable of making accurate predictions.
+
+I begin by combining the initial logistic regression model with the best-performing hyperparameters using the `finalize_model` function. This results in a model configuration that maximizes its predictive potential.
+
+To structure the modeling process effectively, I establish a workflow, `final_lr_wf`, which encapsulates the finalized model and incorporates data preprocessing steps defined in the recipe denoted as `s`.
+
+The model is then trained on the training dataset using the `fit` function, resulting in a fully trained logistic regression model, `fitted_lr_model`. This model is now equipped to provide accurate predictions on new data.
+
+In summary, this phase ensures that the logistic regression model is fine-tuned with optimal hyperparameters, prepared for deployment, and ready to deliver accurate predictions in real-world applications.
+
+```{r}
+# Final Model Fitting for Logistic Regression
+final_lr_model <- finalize_model(lr_model, lr_best)
+final_lr_wf <- workflow() %>% 
+  add_model(final_lr_model) %>% 
+  add_recipe(s)
+
+# Fit the model on the training data
+fitted_lr_model <- fit(final_lr_wf, data = df_train)
+```
+
+### Creation of model B with proper data encoding: Random Forest
+
+In this phase of my analysis, I am specifying a random forest classification model in R using the tidymodels framework. The primary objective is to create a robust and accurate model for classifying categorical outcomes. To achieve this, I have set up the model with several key configurations. Firstly, I've designated two critical parameters, mtry and min_n, to be tuned during the model training process. mtry controls the selection of variables at each split, while min_n determines the minimum number of data points needed for further splitting, ensuring that the model is optimized for accuracy. Additionally, I've chosen to build an ensemble of 50 decision trees within the random forest, a technique known for improving predictive performance. To execute the computations efficiently, I've specified the "ranger" engine.
+
+```{r}
+# Specification 
+rf_model <- 
+  rand_forest(mtry = tune(), min_n = tune(), trees = 50) %>% 
+  set_engine("ranger") %>% 
+  set_mode("classification")
+  
+```
+
+Next I'm creating a streamlined workflow in R that combines a random forest classification model (rf_model) with a data processing recipe (s). This workflow is designed to optimize the process of training the model and preparing the data for classification tasks. The model is integrated into the workflow, allowing data to flow through it during training and prediction. Simultaneously, the data processing recipe defines crucial preprocessing steps, transformations, and feature engineering procedures to enhance the data's suitability for classification. By merging these components, I establish an efficient framework that ensures data is properly processed before being used by the random forest model, enhancing the accuracy and reliability of classification predictions.
+
+```{r}
+# Joining Model and Processing Recipe
+rf <- workflow() %>% 
+  add_model(rf_model) %>% 
+  add_recipe(s)
+
+```
+
+I have configured a robust model evaluation strategy in R by implementing stratified and repeated 10-fold cross-validation. This approach ensures the thorough assessment of model performance while addressing potential issues like class imbalance in the "Diagnosis" variable. Stratification guarantees that each cross-validation fold maintains the same proportion of the target variable, enhancing the representation of different classes. Additionally, I've repeated this process five times to ensure reliability and robustness in the evaluation. Each repetition involves splitting the data into ten folds, with nine for training and one for testing, allowing for multiple assessments of the model's accuracy and its ability to generalize to unseen data.
+
+```{r}
+# Stratified, Repeated 10-fold Cross-Validation
+cv <- vfold_cv(df_train, strata = "Diagnosis", v = 10, repeats = 5)
+
+```
+
+I have established a comprehensive set of evaluation metrics in R, termed "cls," to assess the performance of classification models effectively. This metric set comprises two key metrics: ROC AUC (Receiver Operating Characteristic Area Under the Curve) and the J-Index. ROC AUC measures a model's ability to discriminate between positive and negative classes, with higher values indicating superior discrimination. On the other hand, the J-Index combines sensitivity and specificity to provide a balanced performance measure, with higher values indicating better overall classification performance. By defining these metrics, I am well-equipped to thoroughly evaluate the model's classification capabilities and make informed decisions regarding its effectiveness and suitability for the task at hand.
+
+```{r}
+# Metrics 
+cls <- metric_set(roc_auc, j_index)
+
+```
+
+I have initiated the model tuning process in R by using the tune_grid function to optimize a random forest classification model (rf). This involves exploring a grid of hyperparameters to identify the most suitable configuration. I've specified a grid size of 25, which defines a range of hyperparameter combinations to be evaluated. To ensure robustness and reliable evaluation, I'm utilizing stratified and repeated 10-fold cross-validation (cv) and saving predictions for analysis. Additionally, I've defined a set of evaluation metrics (cls) that includes ROC AUC and the J-Index to assess model performance comprehensively. This tuning process will help identify the best hyperparameter settings for the random forest model, ensuring its effectiveness in classifying categorical outcomes.
+
+```{r}
+# Model Tuning
+rf_res <- tune_grid(rf,
+            grid = 25,
+            resamples = cv,
+            control = control_grid(save_pred = TRUE),
+            metrics = cls)
+```
+
+I have identified the best models ranked by the Area Under the ROC Curve (AUC) as a measure of their classification performance. These models have been selected based on their ability to distinguish between positive and negative classes effectively. The variable "best_mean_AUC" contains information about these top-performing models, allowing further analysis and selection of the most suitable model for the task at hand.
+
+```{r echo=FALSE}
+# Best models ranked by AUC
+best_mean_AUC <- show_best(rf_res, metric = "roc_auc")
+best_mean_AUC
+```
+
+I have ranked the best models based on the J-Index, a performance metric that combines sensitivity and specificity to provide a balanced measure of classification performance. The "best_j_index" variable contains information about these top-performing models, allowing for further analysis and selection of the most suitable model for classification tasks, prioritizing both sensitivity and specificity.
+
+```{r echo=FALSE}
+# Best models ranked by J-index
+best_j_index <- show_best( rf_res, metric = "j_index")
+best_j_index
+```
+
+I have determined the best hyperparameters for the random forest classification model by selecting the configuration that optimizes the Area Under the ROC Curve (ROC AUC) metric. The "rf_best" variable now contains the hyperparameter settings that yield the highest AUC score, ensuring that the model is fine-tuned for optimal classification performance. These hyperparameters will be crucial in building an effective and accurate classification model.
+
+```{r echo=FALSE}
+# Best hyper-parameters
+rf_best <- select_best(rf_res, metric = "roc_auc")
+rf_best
+```
+
+I have computed the Receiver Operating Characteristic Area Under the Curve (ROC AUC) for the best-performing random forest classification model. This analysis allows us to visualize the model's ability to discriminate between positive and negative classes effectively. The ROC AUC curve provides insights into the trade-off between sensitivity and specificity, offering a comprehensive view of the model's classification performance.
+
+```{r echo=FALSE}
+# ROC-AUC of the best model
+rf_auc <- rf_res %>% 
+  collect_predictions(parameters = rf_best) %>% 
+  roc_curve(Diagnosis, .pred_Hepatitis) %>% 
+  mutate(model = "Random Forest")
+
+autoplot(rf_auc)
+```
+
+I have successfully completed the final steps of preparing and fitting a random forest classification model in R. Initially, I configured the model with the best hyperparameters, ensuring optimal performance in classifying categorical outcomes. This final model, referred to as "final_rf_model," was then integrated into a workflow alongside a data processing recipe ("s"), creating a streamlined process for applying the model to the data. The culmination of this process was the fitting of the model to the training data, resulting in the "fitted_rf_model." This model is now well-equipped and fine-tuned to perform accurate and reliable classification tasks.
+
+```{r}
+# Final Model Fitting for Random Forest
+final_rf_model <- finalize_model(rf_model, rf_best)
+final_rf_wf <- workflow() %>% 
+  add_model(final_rf_model) %>% 
+  add_recipe(s)
+
+# Fit the model on the training data
+fitted_rf_model <- fit(final_rf_wf, data = df_train)
+```
+
+### Creation of model C with proper data encoding: Boosted Trees model
+
+In this model specification, I have outlined the configuration for a boosted tree classification model using the `xgboost` engine. The goal is to fine-tune various hyperparameters to create an optimal predictive model. Key parameters to be tuned include `mtry`, which controls the number of randomly selected predictors at each tree split, `trees` specifying a total of 50 boosting iterations, `min_n` setting the minimum number of observations needed in a terminal node, and `tree_depth` managing the maximum depth of each tree. Additionally, the learning rate `learn_rate`, loss reduction threshold, `loss_reduction`, sample size `sample_size`, and stopping criteria for iterations `stop_iter` will all be optimized. This comprehensive approach ensures that the resulting boosted tree classification model will be well-suited to address the specific characteristics and challenges of the dataset and problem at hand.
+
+```{r}
+set.seed(123)
+# Model Specification
+bt_model <- boost_tree(
+  mtry = tune(),
+  trees = 50,
+  min_n = tune(),
+  tree_depth = tune(),
+  learn_rate = tune(),
+  loss_reduction = tune(),
+  sample_size = tune(),
+  stop_iter = tune()) %>%
+  set_engine("xgboost") %>% 
+  set_mode("classification")
+```
+
+Next I am creating a workflow that combines a machine learning model and a data processing recipe. The model, defined as bt_model, is a boosted tree classification model with hyperparameters specified for optimization. The data processing recipe, represented by s, likely includes data preprocessing steps such as feature scaling, imputation, or feature engineering. These two components, the model and the recipe, are seamlessly integrated into the workflow. This workflow aims to ensure that the data is appropriately prepared and fed into the model for training and evaluation, ultimately leading to an effective and well-tuned boosted tree classification model.
+
+```{r}
+# Joining Model and Processing Recipe
+bt <- workflow() %>% 
+  add_model(bt_model) %>% 
+  add_recipe(s)
+```
+
+I am creating a cross-validation strategy for evaluating machine learning models. The cv_bt object is defined using the vfold_cv function, which sets up a 10-fold cross-validation. The 'strata' argument is set to 'Diagnosis,' which indicates that the cross-validation will be stratified based on the 'Diagnosis' variable. Additionally, the 'repeats' parameter is set to 5, meaning that the 10-fold cross-validation will be repeated 5 times. This approach helps ensure robust model evaluation by partitioning the data into training and validation sets multiple times while maintaining balance in the target variable's categories. It is a valuable technique for assessing model performance and generalization across different subsets of the dataset.
+
+```{r}
+# Stratified, Repeated 10-fold Cross-Validation
+cv_bt <- vfold_cv(df_train, strata = "Diagnosis", v = 10, repeats = 5)
+```
+
+I have created a metric set named cls that encompasses two essential classification performance metrics: roc_auc and j_index. These metrics serve as crucial tools for evaluating the effectiveness of binary classification models. The roc_auc metric quantifies the area under the Receiver Operating Characteristic (ROC) curve, offering insights into a model's discrimination ability. A higher roc_auc score signifies better classification performance, with perfection represented by a score of 1.0. On the other hand, the j_index metric, also known as Youden's J statistic, provides a single comprehensive statistic that combines sensitivity and specificity to assess the overall diagnostic accuracy of a model. With values ranging from -1 to 1, where 1 denotes perfect classification, 0 indicates random classification, and -1 signifies the worst performance, the j_index serves as a valuable complement to roc_auc for model evaluation. Together, these metrics empower the evaluation and comparison of binary classification models, aiding in the assessment of their predictive capabilities and discriminatory power
+
+```{r}
+# Metrics
+cls <- metric_set(roc_auc, j_index)
+```
+
+Next, I am performing hyperparameter tuning for the boosted tree classification model (bt) using the tune_grid function. This tuning process involves exploring a grid of 25 different hyperparameter combinations to optimize the model's performance. To assess the performance of each combination, I am using cross-validation as specified by the cv_bt object, which represents a stratified, repeated 10-fold cross-validation scheme. The control_grid argument is used to save prediction results (save_pred = TRUE) during the tuning process for later analysis. The evaluation of model performance is based on the classification metrics defined in the cls metric set, which includes roc_auc and j_index. This comprehensive model tuning procedure aims to identify the best combination of hyperparameters that will result in the highest classification performance on the validation sets within the cross-validation framework
+
+```{r message=FALSE, warning=FALSE}
+# Model Tuning
+bt_res <- tune_grid(bt,
+            grid = 25,
+            resamples = cv_bt,
+            control = control_grid(save_pred = TRUE),
+            metrics = cls)
+```
+
+I am determining the best models from the results of the hyperparameter tuning process (bt_res) based on their mean Area Under the Curve (AUC) scores. The show_best function is used to extract and rank these models. AUC is a critical measure of a model's ability to distinguish between classes, with higher AUC values indicating superior performance. By identifying the models with the highest mean AUC scores, I am pinpointing the hyperparameter configurations that have yielded the best discriminatory power during the cross-validation process. These top-performing models will serve as candidates for further evaluation and deployment in the classification task.
+
+```{r echo=FALSE}
+# Best models ranked by AUC
+best_mean_AUC <- show_best(bt_res, metric = "roc_auc")
+best_mean_AUC
+```
+
+I am determining the best models from the results of the hyperparameter tuning process (bt_res) based on their J-index scores. The show_best function is employed to extract and rank these models using the J-index metric. The J-index is a valuable measure that combines sensitivity and specificity to evaluate the overall diagnostic accuracy of a binary classification model. Models with higher J-index scores are considered to have better overall classification accuracy. By identifying and presenting the best models based on the J-index, I am pinpointing hyperparameter configurations that excel in terms of both sensitivity and specificity, making them strong candidates for further evaluation and deployment in the classification task.
+
+```{r echo=FALSE}
+# Best models ranked by J-index
+best_j_index <- show_best( bt_res, metric = "j_index")
+best_j_index
+```
+
+I am identifying the best hyperparameters for the boosted tree classification model (bt) from the results of the hyperparameter tuning process (bt_res). The select_best function is used to choose the hyperparameter configuration that performed best in terms of AUC, a crucial metric for binary classification models. These selected hyperparameters represent the optimal combination for achieving the highest discriminatory power on the validation sets within the cross-validation framework. The bt_best object now holds the best hyperparameters, which can be used to train the final model for deployment or further analysis.
+
+```{r echo=FALSE}
+# Best hyper-parameters
+bt_best <- select_best(bt_res, metric = "roc_auc")
+bt_best
+```
+
+I am evaluating the performance of the best-tuned boosted tree classification model by calculating its ROC-AUC score. To do this, I first use the collect_predictions function to obtain predictions from the model with the selected best hyperparameters (bt_best). I then create the ROC curve and calculate the AUC using the roc_curve function. Specifically, I'm plotting the ROC curve for the model's predictions on the 'Diagnosis' target variable, with '.pred_Hepatitis' representing the predicted probabilities of the 'Hepatitis' class.
+
+Finally, I'm using the autoplot function to generate a visual representation of the ROC curve. This plot provides a visual assessment of the model's ability to discriminate between the two classes and offers an intuitive understanding of its classification performance.
+
+```{r echo=FALSE}
+# ROC-AUC of the best model
+bt_auc <- bt_res %>% 
+  collect_predictions(parameters = bt_best) %>% 
+  roc_curve(Diagnosis, .pred_Hepatitis) %>% 
+  mutate(model = "Boosted Trees")
+
+autoplot(bt_auc)
+
+```
+
+I then prepare the final boosted tree classification model for deployment by first creating a finalized version of the model (final_bt_model) with the best-tuned hyperparameters (bt_best). To complete the modeling workflow, I'm constructing a workflow object (final_bt_wf) that incorporates the finalized model and the data processing recipe (s).
+
+With the workflow set up, I proceed to fit the model on the training data (df_train) using the fit function. This step involves training the model on the training dataset, incorporating the data processing steps defined in the recipe, and utilizing the optimized hyperparameters. The resulting fitted_bt_model represents the trained and finalized boosted tree classification model, ready for evaluation and making predictions on new data
+
+```{r}
+# Final Model Fitting for Boosted Trees
+final_bt_model <- finalize_model(bt_model, bt_best)
+final_bt_wf <- workflow() %>% 
+  add_model(final_bt_model) %>% 
+  add_recipe(s)
+
+# Fit the model on the training data
+fitted_bt_model <- fit(final_bt_wf, data = df_train)
+```
+
+# 5. Model Evaluation
+
+### Comparison of models and interpretation
+
+```{r echo=FALSE}
+bind_rows(rf_auc, lr_auc, bt_auc) %>% 
+  ggplot(aes(x = 1 - specificity, y = sensitivity, col = model)) + 
+  geom_path(lwd = 1, alpha = 0.8) +
+  geom_abline(lty = 3) + 
+  coord_equal() + 
+  scale_color_viridis_d(alpha = 1,
+  begin = 0,
+  end = 1,
+  direction = 1,
+  option = "D",
+  aesthetics = "colour")
+```
+
+Based on the above graph we can see that the Boosted Trees (BT) model exhibits marginally superior performance compared to the Random Forest (RF), and both the BT and RF models significantly outperform Logistic Regression (LR).
+
+# 6. Model Tuning & Performance Improvement
+
+### Construction of heterogeneous ensemble model as a function
+
+```{r echo=FALSE, warning=FALSE}
+ensemble_model_function <- function(lr_mod, rf_mod, bt_mod, test_data) {
+# Predictions from individual models
+predictions_lr <- predict(lr_mod, df_val, type = "prob")[, 1]
+predictions_rf <- predict(rf_mod, df_val, type = "prob")[, 1]
+predictions_bt <- predict(bt_mod, df_val, type = "prob")[, 1]
+
+# Convert probabilities to binary votes
+binary_vote_lr <- ifelse(predictions_lr >= 0.5, 1, 0)
+binary_vote_rf <- ifelse(predictions_rf >= 0.5, 1, 0)
+binary_vote_bt <- ifelse(predictions_bt >= 0.5, 1, 0)
+
+# Sum of binary votes
+combined_votes <- binary_vote_lr + binary_vote_rf + binary_vote_bt
+majority_vote <- ifelse(combined_votes >= 2, 1, 0)
+
+combined_predictions <- predictions_lr + predictions_rf + predictions_bt
+majority_vote <- ifelse(combined_predictions >= 2, 1, 0)
+#print(majority_vote)
+# Create a data frame to show individual model votes
+  votes_df <- data.frame(lr_vote = binary_vote_lr, 
+                       rf_vote = binary_vote_rf, 
+                       bt_vote = binary_vote_bt, 
+                       majority_vote = majority_vote)
+# Convert to factor with appropriate levels
+  level_mapping <- c("Donor", "Hepatitis") 
+  ensemble_factor <- factor(majority_vote, levels = c(0, 1), labels = level_mapping)
+
+# Confusion matrix
+  c <- confusionMatrix(ensemble_factor, df_val$Diagnosis)
+  print(c)
+
+return(list(ensemble_factor, votes_df))
+  }
+cat("Ensemble model: ")
+final_predictions <- ensemble_model_function(fitted_lr_model, fitted_rf_model, fitted_bt_model, df_val)
+summary(final_predictions[[2]])
+```
+
+The ensemble_model_function is designed to create an ensemble model using predictions from three individual models: logistic regression (lr_mod), random forest (rf_mod), and boosting (bt_mod). This function takes a test dataset and performs the following operations:
+
+1.  Predictions from Individual Models: It uses each model to predict probabilities for the test data.
+
+2.  Binary Votes: It converts the predicted probabilities to binary votes (1 or 0) based on a threshold of 0.5.
+
+3.  Combining Votes and Predictions: The function sums up the binary votes from each model and makes a majority decision. If the combined votes are 2 or more, it predicts 1 (indicating 'Hepatitis'), else 0 ('Donor').
+
+4.  Creating a Data Frame for Votes: It forms a data frame containing individual model votes and the majority vote.
+
+5.  Mapping to Factor Levels: The majority vote is converted into a factor with levels 'Donor' and 'Hepatitis'.
+
+6.  Confusion Matrix: It computes and prints a confusion matrix comparing the ensemble model's predictions against the actual diagnoses in df_val.
+
+The confusion matrix can be summarized as:
+
+**True Positives (TP):** 18 cases were correctly predicted as Hepatitis.
+
+**True Negatives (TN)**: 162 cases were correctly predicted as Donor.
+
+**False Positives (FP):** 0 cases were incorrectly predicted as Hepatitis when they were actually Donor.
+
+**False Negatives (FN):** 4 cases were incorrectly predicted as Donor when they were actually Hepatitis.
+
+**Statistics Accuracy (0.9783):** This is the proportion of total correct predictions (TP + TN) out of all predictions. A high accuracy (97.83%) indicates that the model is generally good at classifying both classes correctly. 95% CI (0.9453, 0.994): This is the 95% confidence interval for the accuracy. It means we can be 95% confident that the true accuracy of the model lies between 94.53% and 99.4%. No Information Rate (0.8804): The rate of the most frequent class if no information (predictive power) is used. Here, it implies that simply predicting the most frequent class would be correct 88.04% of the time.
+
+**P-Value (1.242e-06):** This tests whether the model accuracy is significantly better than the No Information Rate. The very low p-value suggests that the model is significantly better than a naive model that always predicts the most frequent class.
+
+**Kappa (0.8879):** This is a measure of agreement or accuracy, corrected for the agreement that happens by chance. A high kappa value indicates good performance.
+
+**Mcnemar's Test P-Value (0.1336):** This tests the symmetry of the confusion matrix, i.e., whether the misclassification is balanced between classes. The p-value suggests there isn't significant asymmetry in misclassifications.
+
+**Sensitivity (0.81818):** The true positive rate, indicating the proportion of actual Hepatitis cases correctly identified.
+
+**Specificity (1.00000):** The true negative rate, indicating the proportion of actual Donor cases correctly identified.
+
+Positive Predictive Value (1.00000): The proportion of predicted Hepatitis cases that were actually Hepatitis.
+
+**Negative Predictive Value (0.97590):** The proportion of predicted Donor cases that were actually Donor.
+
+**Prevalence (0.11957):** The proportion of actual Hepatitis cases in the dataset.
+
+**Detection Rate (0.09783):** The proportion of all cases that were correctly identified as Hepatitis.
+
+**Detection Prevalence (0.09783):** The proportion of all cases that were predicted as Hepatitis.
+
+**Balanced Accuracy (0.90909):** An average of sensitivity and specificity, giving a balanced measure of performance across both classes.
+
+### Comparison of ensemble to individual models
+
+```{r echo=FALSE, warning=FALSE}
+
+evaluate_model <- function(model, test_data, test_labels) {
+  # Predict probabilities
+  predictions_prob <- predict(model, test_data, type = "prob")[, 1]
+  binary_vote <- ifelse(predictions_prob >= 0.5, 1, 0)
+
+  # Convert probabilities to binary predictions based on a threshold (e.g., 0.5)
+  threshold <- 0.5
+  predictions_binary <- ifelse(predictions_prob > threshold, 1, 0)
+  
+  # Converting to factor
+level_mapping <- c("Donor", "Hepatitis") 
+predictions_binary_factor <- factor(predictions_binary, levels = c(0, 1), labels = level_mapping)
+
+
+  # Confusion matrix
+  cm <- confusionMatrix(as.factor(predictions_binary_factor), as.factor(test_labels))
+  print(cm)
+
+  # Calculate metrics
+  accuracy <- cm$overall['Accuracy']
+  precision <- cm$byClass['Precision']
+  recall <- cm$byClass['Recall']
+  f1 <- 2 * (precision * recall) / (precision + recall)
+
+  # Return a list of metrics
+  return(list(accuracy = accuracy, precision = precision, recall = recall, f1 = f1))
+}
+
+cat("Logistic Regression: ")
+results_lr <- evaluate_model(fitted_lr_model, df_val, df_val$Diagnosis)
+cat("Random Forest: ")
+results_rf <- evaluate_model(fitted_rf_model, df_val, df_val$Diagnosis)
+cat("Boosted Tree: ")
+results_bt <- evaluate_model(fitted_bt_model, df_val, df_val$Diagnosis)
+```
+
+### Failure analysis for all models
+
+**Logistic Regression:**
+
+Accuracy: 92.39%
+
+Sensitivity (True Positive Rate): 90.91%
+
+Specificity (True Negative Rate): 92.59%
+
+Failure Analysis: False Negative (Hepatitis predicted as Donor): There are 12 instances where the model incorrectly predicted Hepatitis as Donor. These are cases where actual Hepatitis patients were misclassified.
+
+False Positive (Donor predicted as Hepatitis): There are 2 instances where the model incorrectly predicted Donor as Hepatitis.
+
+**Random Forest:**
+
+Accuracy: 98.37%
+
+Sensitivity (True Positive Rate): 100.00%
+
+Specificity (True Negative Rate): 98.15%
+
+Failure Analysis: False Negative (Hepatitis predicted as Donor): There are 3 instances where the model incorrectly predicted Hepatitis as Donor. Similar to Logistic Regression, these are cases where actual Hepatitis patients were misclassified.
+
+False Positive (Donor predicted as Hepatitis): There are no instances where the model incorrectly predicted Donor as Hepatitis. The Random Forest model appears to have a very low false positive rate.
+
+**Boosted Tree:**
+
+Accuracy: 94.57%
+
+Sensitivity (True Positive Rate): 100.00%
+
+Specificity (True Negative Rate): 93.83%
+
+**Failure Analysis:** False Negative (Hepatitis predicted as Donor): There are 10 instances where the model incorrectly predicted Hepatitis as Donor. Similar to Logistic Regression, these are cases where actual Hepatitis patients were misclassified.
+
+**False Positive (Donor predicted as Hepatitis):** There are no instances where the model incorrectly predicted Donor as Hepatitis. Similar to the Random Forest model, the Boosted Tree model has a very low false positive rate.
+
+### Comparison of ensemble to individual models 
+The Ensemble model I've built achieves an impressive accuracy of 0.9783, meaning it correctly predicts both "Hepatitis" and "Donor" cases with high overall accuracy. In terms of Kappa, it scores 0.8879, which indicates substantial agreement between the model's predictions and the actual outcomes. However, one critical aspect to consider in medical diagnosis tasks is sensitivity, which measures the model's ability to correctly identify positive cases (in this case, "Hepatitis"). The Ensemble model shows a sensitivity of 0.81818, which means it correctly identifies 81.82% of the "Hepatitis" cases. On the flip side, the Ensemble model performs exceptionally well in terms of specificity (True Negative Rate) and Positive Predictive Value (Precision). It has a perfect specificity of 1.00000, meaning it correctly identifies all "Donor" cases without any false positives. Additionally, it has a perfect Positive Predictive Value of 1.00000, indicating that when it predicts "Hepatitis," it's always correct. The Ensemble model's Balanced Accuracy is 0.90909, taking into account both sensitivity and specificity.
+
+The Ensemble model excels in terms of specificity and Positive Predictive Value, indicating that when it predicts "Hepatitis," it's highly reliable. However, it does have room for improvement in sensitivity. While its overall accuracy and specificity are impressive, it's not catching all "Hepatitis" cases, which might be a concern in a medical context.
+
+### Appropriateness of chosen models for given data
+
+In evaluating the appropriateness of the chosen models for the given dataset, I find that all three models - Logistic Regression, Random Forest, and Boosted Tree - demonstrate strong performance in classifying Hepatitis and Donor cases. Firstly, the Logistic Regression model yields a reasonably high accuracy of 92.39%, along with good sensitivity and specificity, indicating its effectiveness in distinguishing between the two classes. Secondly, the Random Forest model stands out with an exceptional accuracy of 98.37% and high sensitivity, specificity, and balanced accuracy, making it a robust choice for this dataset. Finally, the Boosted Tree model also performs well with a 94.57% accuracy and strong sensitivity and specificity. However, the Random Forest model appears to be the most appropriate choice for this specific dataset due to its outstanding performance across various metrics, including accuracy, sensitivity, specificity, and balanced accuracy. Moreover, it maintains a high positive predictive value while achieving a perfect negative predictive value, highlighting its suitability for this classification task.
+
+# Reference
+
+https://archive.ics.uci.edu/dataset/571/hcv+data
