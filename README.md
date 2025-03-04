@@ -1,4 +1,4 @@
-# A Predictive Model to Predict the Development of Hepatitis C Stages: Development and Performance Evaluation
+# Predictive Model for Hepatitis C Stages: Development and Performance Evaluation
 
 **Author:** Akanksha Pandey  
 **Date:** Fall 2023
